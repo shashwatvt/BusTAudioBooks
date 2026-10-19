@@ -23,7 +23,7 @@ const limitMeta = pLimit(6); // cap concurrent cover-art lookups
 // Includes the content type — the same torrent resolved as "comic" keeps a
 // different file set than as "audiobook".
 function streamKey(apiKey, type, infohash) {
-  const kh = crypto.createHash("sha1").update(apiKey).digest("hex").slice(0, 12);
+  const kh = crypto.createHash("sha1").update(apiKey || "none").digest("hex").slice(0, 12);
   return `${kh}:${type}:${infohash}`;
 }
 
@@ -106,8 +106,8 @@ const CONFIGURE_HTML = `<!doctype html>
   <h1>BusTAudioBooks</h1>
   <p class="sub">Search &amp; stream audiobooks through your TorBox account.</p>
 
-  <label>TorBox API key <small>(required)</small></label>
-  <input id="apiKey" placeholder="from torbox.app → Settings → API"/>
+  <label>TorBox API key <small>(optional — leave blank for magnet links)</small></label>
+  <input id="apiKey" placeholder="from torbox.app → Settings → API (optional)"/>
 
   <div id="tokenCfg" style="display:none">
     <label>Access token <small>(required — ask whoever runs this instance)</small></label>
@@ -158,7 +158,7 @@ function b64url(str){
 }
 function gen(){
   var apiKey=document.getElementById('apiKey').value.trim();
-  if(!apiKey){ alert('TorBox API key is required'); return; }
+  // apiKey optional now
   var cfg={ apiKey:apiKey };
   var abb=document.getElementById('abbDomain').value.trim();
   var ju=document.getElementById('jackettUrl').value.trim();
@@ -234,20 +234,8 @@ async function runSearch(cfg, query, page, type = "audiobook") {
   }
   results = results.slice(0, 40);
 
-  let cachedSet = new Set();
-  try {
-    const hashes = results.map((r) => r.infohash).filter(Boolean);
-    if (hashes.length) cachedSet = await torbox.checkCachedMany(cfg.apiKey, hashes);
-  } catch (_) {
-    /* non-critical */
-  }
-
-  if (instantOnly) results = results.filter((r) => r.infohash && cachedSet.has(r.infohash));
-
+  const cachedSet = new Set();
   results.sort((a, b) => {
-    const ca = a.infohash && cachedSet.has(a.infohash) ? 1 : 0;
-    const cb = b.infohash && cachedSet.has(b.infohash) ? 1 : 0;
-    if (ca !== cb) return cb - ca;
     const score = type === "comic" ? comicQualityScore : qualityScore;
     const qa = score(a);
     const qb = score(b);
@@ -325,17 +313,10 @@ app.get("/:config/meta/:type/:id.json", async (req, res) => {
   const item = decodeItemId(req.params.id);
   if (!item) return res.json({ meta: null });
 
-  const [meta, isCached] = await Promise.all([
-    withTimeout(enrich(item.name), 2500, { poster: null, author: null, year: null }),
-    item.infohash
-      ? withTimeout(torbox.checkCached(cfg.apiKey, item.infohash), 4000, false)
-      : Promise.resolve(false),
-  ]);
+  const meta = await withTimeout(enrich(item.name), 2500, { poster: null, author: null, year: null });
 
   const facts = detailLine([
-    item.infohash
-      ? (isCached ? "⚡ Instant on TorBox" : "Will download to TorBox on play")
-      : "Adds to TorBox on play",
+    "Magnet link (opens in your torrent client)",
     item.format,
     item.bitrate,
     torbox.formatBytes(item.size),
@@ -366,16 +347,11 @@ async function resolveForItem(cfg, item) {
   const cachedStreams = streamCache.get(key);
   if (cachedStreams) return { ready: true, status: "ok", streams: cachedStreams };
 
-  const result = await torbox.resolveStreams(cfg.apiKey, {
-    magnet: item.magnet,
-    infohash: item.infohash,
-    torrentUrl: item.torrentUrl,
-    name: item.name,
-    instantOnly: isInstantOnly(cfg),
-    kind: type === "comic" ? "comic" : "audio",
-  });
-  if (result.ready) streamCache.set(key, result.streams);
-  return result;
+  // No TorBox: return the magnet link directly so Stremio/client handles it.
+  const magnet = item.magnet || (item.infohash ? `magnet:?xt=urn:btih:${item.infohash}` : null);
+  const streams = magnet ? [{ title: item.name, url: magnet }] : [];
+  if (streams.length) streamCache.set(key, streams);
+  return { ready: streams.length > 0, status: streams.length ? "ok" : "no magnet", streams };
 }
 
 // ---- Stream -----------------------------------------------------------------
