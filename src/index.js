@@ -65,7 +65,7 @@ function prettyName(raw) {
 // Read & validate the per-user config from the URL path segment.
 function getConfig(req, res) {
   const cfg = decodeConfig(req.params.config);
-  if (!cfg || !cfg.apiKey) {
+  if (!cfg) {
     res.status(400).json({ err: "Missing or invalid configuration. Re-install the addon." });
     return null;
   }
